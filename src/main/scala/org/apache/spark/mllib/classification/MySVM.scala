@@ -4,7 +4,7 @@ package org.apache.spark.mllib.classification
  * Created by LU Tianming on 15-3-25.
  */
 
-import breeze.linalg.SparseVector
+import breeze.linalg.{DenseVector => BDV, SparseVector => BSV, Vector => BV, norm}
 import org.apache.spark.annotation.Experimental
 import org.apache.spark.mllib.linalg.{Vectors, SparseVector, Vector}
 import org.apache.spark.mllib.optimization._
@@ -14,10 +14,9 @@ import org.apache.spark.mllib.util.MLUtils._
 import org.apache.spark.mllib.linalg.BLAS._
 import org.apache.spark.rdd.RDD
 import breeze.linalg.support._
-import breeze.linalg.{DenseVector => BDV, SparseVector => BSV, Vector => BV}
 
 
-class MySVMModel (supporters: Array[(Int, LabeledPoint)], kernel: (Vector, Vector) => Double, regParam: Double, t: Int) extends ClassificationModel with Serializable {
+class KernelSVMModel(val supporters: Array[(Double, Vector, Double)], val kernel: (Vector, Vector) => Double, regParam: Double, t: Int) extends ClassificationModel with Serializable {
 
   var intercept: Double = 0
   var threshold: Option[Double] = Some(0.0)
@@ -46,11 +45,11 @@ class MySVMModel (supporters: Array[(Int, LabeledPoint)], kernel: (Vector, Vecto
 
   protected def predictPoint(dataMatrix: Vector): Double = {
     val margin = supporters.map { v =>
-      val alpha = v._1
-      val supporter = v._2
-      val y = supporter.label * 2 - 1
-      alpha * y * kernel(supporter.features, dataMatrix)
-    }.sum / (regParam*t) + intercept
+      val y = v._1
+      val features = v._2
+      val alpha = v._3
+      alpha * y * kernel(features, dataMatrix)
+    }.sum / (regParam * t) + intercept
 
     threshold match {
       case Some(t) => if (margin > t) 1.0 else 0.0
@@ -60,7 +59,7 @@ class MySVMModel (supporters: Array[(Int, LabeledPoint)], kernel: (Vector, Vecto
 
   override def predict(testData: RDD[Vector]): RDD[Double] = {
     testData.mapPartitions { iter =>
-      iter.map( v => predictPoint(v) )
+      iter.map(v => predictPoint(v))
     }
   }
 
@@ -70,18 +69,18 @@ class MySVMModel (supporters: Array[(Int, LabeledPoint)], kernel: (Vector, Vecto
 }
 
 
-class LinearSVMWithPegasos private (
-                                     private var numIterations: Int,
-                                     private var regParam: Double,
-                                     private var miniBatchFraction: Double
-                                     )
-extends Serializable{
+class LinearSVMWithPegasos private(
+                                    private var numIterations: Int,
+                                    private var regParam: Double,
+                                    private var miniBatchFraction: Double
+                                    )
+  extends Serializable {
   def createModel(weight: Vector, intercept: Double): SVMModel = {
     new SVMModel(weight, intercept)
   }
 
   def run(input: RDD[LabeledPoint]): SVMModel = {
-    val data = input.map{point =>
+    val data = input.map { point =>
       //scale label from {0, 1} to {-1, 1}
       val y = point.label * 2 - 1
       //append 1 to features for intercept
@@ -92,94 +91,105 @@ extends Serializable{
     val numFeatures = input.map(_.features.size).first()
     val weights = Vectors.fromBreeze(BDV.zeros[Double](numFeatures + 1))
 
-    for(i <- 1 to numIterations){
+    for (i <- 1 to numIterations) {
       val samples = data.sample(false, miniBatchFraction)
       val k = samples.count()
       val stepSize = 1 / (regParam * i)
 
       // w_i+1 = w_i - step*reg*w_i
-      axpy(-1*stepSize*regParam, weights, weights)
+      axpy(-1 * stepSize * regParam, weights, weights)
 
       //hing loss
-      val filteredSamples = samples.filter{ v =>
+      val filteredSamples = samples.filter { v =>
         val y = v._1
         val x = v._2
-        if(y * dot(weights, x) < 1){
+        if (y * dot(weights, x) < 1) {
           true
-        }else{
+        } else {
           false
         }
       }
 
       val s = filteredSamples.aggregate(BDV.zeros[Double](weights.size))(
-      seqOp = (c, v) =>{
-        val y = v._1
-        val x = v._2
-        c + x.toBreeze * y
-      },
-      combOp = (c1, c2) => {
-        c1 + c2
-      })
+        seqOp = (c, v) => {
+          val y = v._1
+          val x = v._2
+          c + x.toBreeze * y
+        },
+        combOp = (c1, c2) => {
+          c1 + c2
+        })
 
       //w_i+1 += step/k * sum(loss_gradient)
-      axpy(stepSize/k, Vectors.fromBreeze(s), weights)
+      axpy(stepSize / k, Vectors.fromBreeze(s), weights)
     }
 
     //create svmmodel from result
-    val w = Vectors.dense(weights.toArray.slice(0, weights.size-1))
-    val b = weights(weights.size-1)
+    val w = Vectors.dense(weights.toArray.slice(0, weights.size - 1))
+    val b = weights(weights.size - 1)
     createModel(w, b)
   }
 }
 
-class SVMWithKernel private (
-                           private var numIterations: Int,
-                           private var regParam: Double,
-                           private var kernel: (Vector, Vector) => Double)
+class KernelSVMWithPegasos private(
+                                    private var numIterations: Int,
+                                    private var regParam: Double,
+                                    private var kernel: (Vector, Vector) => Double)
   extends Serializable {
 
-  protected def createModel(supporters: Array[(Int, LabeledPoint)],
+  protected def createModel(supporters: Array[(Double, Vector, Double)],
                             kernel: (Vector, Vector) => Double,
                             regParam: Double,
-                            numIterations: Int): MySVMModel = {
-    new MySVMModel(supporters, kernel, regParam, numIterations)
+                            numIterations: Int): KernelSVMModel = {
+    new KernelSVMModel(supporters, kernel, regParam, numIterations)
   }
 
-  def run(input: RDD[LabeledPoint]): MySVMModel = {
-    val indexedInput = input.zipWithIndex().cache()
-    val count = indexedInput.count()
-    val alpha = BDV.zeros[Int](count.toInt)
+  def run(input: RDD[LabeledPoint]): KernelSVMModel = {
+    val data = input.map { point =>
+      val y = point.label * 2 - 1
+      (y, point.features)
+    }.zipWithIndex().cache()
+    val count = data.count()
+    val alpha = BDV.zeros[Double](count.toInt)
 
-    for(i <- 1 to numIterations){
-      val stepsize = 1/ (regParam * i)
-      val sample = indexedInput.takeSample(false, 1, 42+i)(0)
-      val res = indexedInput.map{ case (point, index) =>
-        if(index != sample._2){
-          //scale y to -1 or 1
-          val y = point.label * 2 - 1
-          val a = alpha(index.toInt)
-          val res = y*a*kernel(point.features, sample._1.features)
-          res
-        }else{
-          0
+    for (i <- 1 to numIterations) {
+      val stepSize = 1 / (regParam * i)
+      val sample = data.takeSample(false, 1, 42 + i)(0)
+      val res = data.aggregate(0.0)(
+        seqOp = (c, v) => {
+          val y = v._1._1
+          val features = v._1._2
+          val index = v._2
+
+          if (index != sample._2) {
+            val a = alpha(index.toInt)
+            val res = y * a * kernel(features, sample._1._2)
+            c + res
+          } else {
+            c
+          }
+        },
+        combOp = (c1, c2) => {
+          c1 + c2
         }
-      }.reduce( (a, b) => a+b ) * (sample._1.label*2-1) * stepsize
+      ) * sample._1._1 * stepSize
 
-      if(res < 1){
+      if (res < 1) {
         val a = alpha(sample._2.toInt)
         alpha(sample._2.toInt) = a + 1
       }
 
     }
-    val supporters = indexedInput.filter{ v =>
+    val supporters = data.filter { v =>
       val index = v._2
-      if(alpha(index.toInt) < 1){
+      if (alpha(index.toInt) > 0) {
         true
-      }else{
+      } else {
         false
       }
-    }.map{ v =>
-      (0, v._1)
+    }.map { v =>
+      //(lable, features, alpha)
+      (v._1._1, v._1._2, alpha(v._2.toInt))
     }.collect()
 
     createModel(supporters, kernel, regParam, numIterations)
@@ -188,10 +198,10 @@ class SVMWithKernel private (
 
 object LinearSVMWithPegasos {
   def train(
-           input: RDD[LabeledPoint],
-           numIterations: Int,
-           regParam: Double,
-           miniBatchFraction: Double
+             input: RDD[LabeledPoint],
+             numIterations: Int,
+             regParam: Double,
+             miniBatchFraction: Double
              ): SVMModel = {
     new LinearSVMWithPegasos(numIterations, regParam, miniBatchFraction).run(input)
   }
@@ -200,17 +210,31 @@ object LinearSVMWithPegasos {
 /**
  * Top-level methods for calling SVM. NOTE: Labels used in SVM should be {0, 1}.
  */
-object SVMWithKernel {
+object KernelSVMWithPegasos {
   def train(
              input: RDD[LabeledPoint],
              numIterations: Int,
              regParam: Double,
-             kernelName: String): MySVMModel = {
-    val kernel: (Vector, Vector) => Double = (v1, v2) => {
-      val k = v1.toBreeze.toDenseVector.dot(v2.toBreeze.toDenseVector)
-      k
+             kernelName: String): KernelSVMModel = {
+    val kernel: (Vector, Vector) => Double = kernelName match {
+      case "linear" => (v1, v2) => {
+        val k = v1.toBreeze.toDenseVector.dot(v2.toBreeze.toDenseVector)
+        k
+      }
+      case "gaussian" => (v1, v2) => {
+        val bv1 = v1.toBreeze
+        val bv2 = v2.toBreeze
+        val v = Vectors.fromBreeze(bv1-bv2)
+        val n = Vectors.norm(v, 2)
+        val k = math.exp(math.pow(n, 2) * -0.5)
+        k
+      }
+      case _ => (v1, v2) => {
+        val k = v1.toBreeze.toDenseVector.dot(v2.toBreeze.toDenseVector)
+        k
+      }
     }
-    new SVMWithKernel(numIterations, regParam, kernel).run(input)
+    new KernelSVMWithPegasos(numIterations, regParam, kernel).run(input)
   }
 }
 

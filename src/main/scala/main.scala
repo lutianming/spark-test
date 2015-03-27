@@ -70,7 +70,7 @@ object kernel {
     if(args.length > 0){
       filename = args(0)
     }else{
-      filename = "scripts/small.csv"
+      filename = "scripts/clowns.csv"
     }
 
     val conf = new SparkConf().setAppName("spark-svm").setMaster("local")
@@ -90,10 +90,10 @@ object kernel {
 
     // Run training algorithm to build the model
     val numIterations = 1000
-    val regPram = 0.001
+    val regPram = 0.01
 
 
-    val model = SVMWithKernel.train(training, numIterations, regPram, "linear")
+    val model = KernelSVMWithPegasos.train(training, numIterations, regPram, "gaussian")
     //val model = SVMWithSVM.train(training, numIterations)
 
     // Clear the default threshold.
@@ -102,19 +102,14 @@ object kernel {
     // Compute raw scores on the test set.
     val scoreAndLabels = test.map { point =>
       val score = model.predict(point.features)
-      println((score, point.label))
       (score, point.label)
     }
 
-    //    val scores = scoreAndLabels.map( item =>
-    //      math.abs(item._1-item._2)
-    //    )
-    //    val p = scores.reduce((a, b) => a+b)/scores.count()
-    //    println("P: " + p)
     // Get evaluation metrics.
     val metrics = new BinaryClassificationMetrics(scoreAndLabels)
     val auROC = metrics.areaUnderROC()
 
+    println(model.supporters.length)
     println("Area under ROC = " + auROC)
 
   }
