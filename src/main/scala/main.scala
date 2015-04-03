@@ -91,9 +91,9 @@ object kernel {
     // Run training algorithm to build the model
     val numIterations = 1000
     val regPram = 0.01
+    val biased = false
 
-
-    val model = KernelSVMWithPegasos.train(training, numIterations, regPram, "gaussian")
+    val model = KernelSVMWithPegasos.train(training, numIterations, regPram, biased, "gaussian")
     //val model = SVMWithSVM.train(training, numIterations)
 
     // Clear the default threshold.
@@ -109,7 +109,7 @@ object kernel {
     val metrics = new BinaryClassificationMetrics(scoreAndLabels)
     val auROC = metrics.areaUnderROC()
 
-    println(model.supporters.length)
+    println(model.supportVectors.length)
     println("Area under ROC = " + auROC)
 
   }

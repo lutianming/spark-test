@@ -4,19 +4,16 @@ package org.apache.spark.mllib.classification
  * Created by LU Tianming on 15-3-25.
  */
 
-import breeze.linalg.{DenseVector => BDV, SparseVector => BSV, Vector => BV, norm}
+import breeze.linalg.{DenseVector => BDV, SparseVector => BSV, Vector => BV}
 import org.apache.spark.annotation.Experimental
 import org.apache.spark.mllib.linalg.{Vectors, SparseVector, Vector}
-import org.apache.spark.mllib.optimization._
 import org.apache.spark.mllib.regression._
-import org.apache.spark.mllib.util.DataValidators
 import org.apache.spark.mllib.util.MLUtils._
 import org.apache.spark.mllib.linalg.BLAS._
 import org.apache.spark.rdd.RDD
-import breeze.linalg.support._
 
 
-class KernelSVMModel(val supporters: Array[(Double, Vector, Double)], val kernel: (Vector, Vector) => Double, regParam: Double, t: Int) extends ClassificationModel with Serializable {
+class KernelSVMModel(val supportVectors: Array[(Double, Vector, Double)], val kernel: (Vector, Vector) => Double, biased: Boolean, regParam: Double, t: Int) extends ClassificationModel with Serializable {
 
   var intercept: Double = 0
   var threshold: Option[Double] = Some(0.0)
@@ -44,11 +41,13 @@ class KernelSVMModel(val supporters: Array[(Double, Vector, Double)], val kernel
   }
 
   protected def predictPoint(dataMatrix: Vector): Double = {
-    val margin = supporters.map { v =>
+    val margin = supportVectors.map { v =>
       val y = v._1
       val features = v._2
       val alpha = v._3
-      alpha * y * kernel(features, dataMatrix)
+
+      val x = if(biased) { appendBias(dataMatrix) } else { dataMatrix }
+      alpha * y * kernel(features, x)
     }.sum / (regParam * t) + intercept
 
     threshold match {
@@ -134,20 +133,23 @@ class LinearSVMWithPegasos private(
 class KernelSVMWithPegasos private(
                                     private var numIterations: Int,
                                     private var regParam: Double,
+                                    private var biased: Boolean,
                                     private var kernel: (Vector, Vector) => Double)
   extends Serializable {
 
   protected def createModel(supporters: Array[(Double, Vector, Double)],
                             kernel: (Vector, Vector) => Double,
+                            biased: Boolean,
                             regParam: Double,
                             numIterations: Int): KernelSVMModel = {
-    new KernelSVMModel(supporters, kernel, regParam, numIterations)
+    new KernelSVMModel(supporters, kernel, biased, regParam, numIterations)
   }
 
   def run(input: RDD[LabeledPoint]): KernelSVMModel = {
     val data = input.map { point =>
       val y = point.label * 2 - 1
-      (y, point.features)
+      val x = if(biased){ appendBias(point.features) } else { point.features }
+      (y, x)
     }.zipWithIndex().cache()
     val count = data.count()
     val alpha = BDV.zeros[Double](count.toInt)
@@ -192,7 +194,7 @@ class KernelSVMWithPegasos private(
       (v._1._1, v._1._2, alpha(v._2.toInt))
     }.collect()
 
-    createModel(supporters, kernel, regParam, numIterations)
+    createModel(supporters, kernel, biased, regParam, numIterations)
   }
 }
 
@@ -215,10 +217,11 @@ object KernelSVMWithPegasos {
              input: RDD[LabeledPoint],
              numIterations: Int,
              regParam: Double,
+             biased: Boolean,
              kernelName: String): KernelSVMModel = {
     val kernel: (Vector, Vector) => Double = kernelName match {
       case "linear" => (v1, v2) => {
-        val k = v1.toBreeze.toDenseVector.dot(v2.toBreeze.toDenseVector)
+        val k = v1.toBreeze.dot(v2.toBreeze)
         k
       }
       case "gaussian" => (v1, v2) => {
@@ -229,12 +232,16 @@ object KernelSVMWithPegasos {
         val k = math.exp(math.pow(n, 2) * -0.5)
         k
       }
+      case "polynomial" => (v1, v2) => {
+        val k = v1.toBreeze.dot(v2.toBreeze)
+        math.pow(k + 1, 2)
+      }
       case _ => (v1, v2) => {
-        val k = v1.toBreeze.toDenseVector.dot(v2.toBreeze.toDenseVector)
+        val k = v1.toBreeze.dot(v2.toBreeze)
         k
       }
     }
-    new KernelSVMWithPegasos(numIterations, regParam, kernel).run(input)
+    new KernelSVMWithPegasos(numIterations, regParam, biased, kernel).run(input)
   }
 }
 
