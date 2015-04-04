@@ -17,11 +17,20 @@ def datagen(name, size, sigma=1):
 
     elif(name == 'ball'):
         n = size/2
-        x1 = sigma*np.random.normal(size=(n, 3))
-        x2 = sigma*np.random.normal(size=(n, 3))
-        x2 = x2 + np.sign(x2)
-        X = np.vstack((x1, x2))
-        labels = np.concatenate((np.ones(n), np.zeros(n)))
+        X1 = sigma*np.random.normal(size=(n, 3))
+
+        dim = 1.5
+        x2 = np.linspace(-dim, dim, np.sqrt(n))
+        y2 = x2
+        x2v, y2v = np.meshgrid(x2, y2)
+        z2v = dim**2 - x2v**2 - y2v**2
+
+        n2 = x2v.size
+        X2 = np.hstack((x2v.reshape((n2, 1)), y2v.reshape((n2, 1)), z2v.reshape((n2, 1))))
+        # noise = np.random.uniform(-0.1, 0.1, size=(n2, 3))
+        # X2 += noise
+        X = np.vstack((X1, X2))
+        labels = np.concatenate((np.ones(n), np.zeros(n2)))
 
     elif(name == 'checkers'):
         n = size/16

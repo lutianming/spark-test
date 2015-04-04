@@ -6,7 +6,29 @@ def datagen(name, size, sigma=1):
     name = name.lower()
     X = None
     labels = None
-    if(name == 'mixture'):
+    if(name == 'linear'):
+        n = size/2
+        X1 = sigma*np.random.normal(size=(n, 2))
+        X1 = X1 + 1
+        X2 = sigma*np.random.normal(size=(n, 2))
+        X2 = X2 - 1
+        X = np.vstack((X1, X2))
+        labels = np.concatenate((np.ones(n), np.zeros(n)))
+
+    elif(name == 'circle'):
+        n = size/2
+        X1 = sigma*np.random.normal(size=(n, 2))
+
+        r = np.random.uniform(1, 1.5, size=(n, 1))
+        angle = np.random.normal(size=(n, 1))*np.pi*2
+        x2 = np.cos(angle)*r
+        y2 = np.sin(angle)*r
+        X2 = np.hstack((x2, y2))
+
+        X = np.vstack((X1, X2))
+        labels = np.concatenate((np.ones(n), np.zeros(n)))
+
+    elif(name == 'mixture'):
         n = size/3
         x1 = sigma * np.random.randn(n) + 0.3
         x2 = sigma * np.random.randn(n) - 0.3
@@ -18,14 +40,7 @@ def datagen(name, size, sigma=1):
         y = np.concatenate((y1, y2, y3))
         labels = np.concatenate((np.ones(n), np.zeros(n), np.ones(n)))
         X = np.vstack((x, y)).transpose()
-    elif(name == 'gaussian'):
-        n = size/2
-        x1 = sigma*np.random.normal(size=(n, 2))
-        x1 = x1 + 2
-        x2 = sigma*np.random.normal(size=(n, 2))
-        x2 = x2 - 2
-        X = np.vstack((x1, x2))
-        labels = np.concatenate((np.ones(n), np.zeros(n)))
+
     elif(name == 'checkers'):
         n = size/16
 
