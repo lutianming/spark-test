@@ -12,7 +12,9 @@ import org.apache.spark.mllib.util.MLUtils._
 import org.apache.spark.mllib.linalg.BLAS._
 import org.apache.spark.rdd.RDD
 
-
+/*
+supportVecors: Array[(label, point, alpha)]
+ */
 class KernelSVMModel(val supportVectors: Array[(Double, Vector, Double)], val kernel: (Vector, Vector) => Double, biased: Boolean, regParam: Double, t: Int) extends ClassificationModel with Serializable {
 
   var intercept: Double = 0
