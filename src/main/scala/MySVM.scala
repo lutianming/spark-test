@@ -1,16 +1,16 @@
-package org.apache.spark.mllib.classification
-
 /**
  * Created by LU Tianming on 15-3-25.
  */
 
 import breeze.linalg.{DenseVector => BDV, SparseVector => BSV, Vector => BV}
+import breeze.linalg._
 import org.apache.spark.annotation.Experimental
-import org.apache.spark.mllib.linalg.{Vectors, SparseVector, Vector}
+import org.apache.spark.mllib.classification.{SVMModel, ClassificationModel}
+import org.apache.spark.mllib.linalg.{Vector, Vectors}
 import org.apache.spark.mllib.regression._
 import org.apache.spark.mllib.util.MLUtils._
-import org.apache.spark.mllib.linalg.BLAS._
 import org.apache.spark.rdd.RDD
+
 
 /*
 supportVecors: Array[(label, point, alpha)]
@@ -90,7 +90,7 @@ class LinearSVMWithPegasos private(
     }.cache()
 
     val numFeatures = input.map(_.features.size).first()
-    val weights = Vectors.fromBreeze(BDV.zeros[Double](numFeatures + 1))
+    val weights = BDV.zeros[Double](numFeatures + 1)
 
     for (i <- 1 to numIterations) {
       val samples = data.sample(false, miniBatchFraction)
@@ -104,7 +104,7 @@ class LinearSVMWithPegasos private(
       val filteredSamples = samples.filter { v =>
         val y = v._1
         val x = v._2
-        if (y * dot(weights, x) < 1) {
+        if (y * (weights.dot(BDV(x.toArray))) < 1) {
           true
         } else {
           false
@@ -115,14 +115,14 @@ class LinearSVMWithPegasos private(
         seqOp = (c, v) => {
           val y = v._1
           val x = v._2
-          c + x.toBreeze * y
+          c + BDV(x.toArray) * y
         },
         combOp = (c1, c2) => {
           c1 + c2
         })
 
       //w_i+1 += step/k * sum(loss_gradient)
-      axpy(stepSize / k, Vectors.fromBreeze(s), weights)
+      axpy(stepSize / k, s, weights)
     }
 
     //create svmmodel from result
@@ -223,23 +223,24 @@ object KernelSVMWithPegasos {
              kernelName: String): KernelSVMModel = {
     val kernel: (Vector, Vector) => Double = kernelName match {
       case "linear" => (v1, v2) => {
-        val k = v1.toBreeze.dot(v2.toBreeze)
+        val k = BDV(v1.toArray).dot(BDV(v2.toArray))
         k
       }
       case "gaussian" => (v1, v2) => {
-        val bv1 = v1.toBreeze
-        val bv2 = v2.toBreeze
-        val v = Vectors.fromBreeze(bv1-bv2)
-        val n = Vectors.norm(v, 2)
+        val bv1 = BDV(v1.toArray)
+        val bv2 = BDV(v2.toArray)
+        val n = norm(bv1-bv2)
         val k = math.exp(math.pow(n, 2) * -0.5)
         k
       }
       case "polynomial" => (v1, v2) => {
-        val k = v1.toBreeze.dot(v2.toBreeze)
+        val bv1 = BDV(v1.toArray)
+        val bv2 = BDV(v2.toArray)
+        val k = bv1.dot(bv2)
         math.pow(k + 1, 2)
       }
       case _ => (v1, v2) => {
-        val k = v1.toBreeze.dot(v2.toBreeze)
+        val k = BDV(v1.toArray).dot(BDV(v2.toArray))
         k
       }
     }
