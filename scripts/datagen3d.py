@@ -6,7 +6,7 @@ def datagen(name, size, sigma=1):
     name = name.lower()
     X = None
     labels = None
-    if(name == 'gaussian'):
+    if(name == 'linear'):
         n = size/2
         x1 = sigma*np.random.normal(size=(n, 3))
         x1 = x1 + 1
