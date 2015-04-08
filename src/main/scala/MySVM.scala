@@ -2,40 +2,57 @@
  * Created by LU Tianming on 15-3-25.
  */
 
+import java.io.Serializable
+
 import breeze.linalg.{DenseVector => BDV, SparseVector => BSV, Vector => BV}
 import breeze.linalg._
+import breeze.numerics.cos
+import breeze.stats.distributions.{Uniform, Gaussian}
 import org.apache.spark.annotation.Experimental
 import org.apache.spark.mllib.classification.{SVMModel, ClassificationModel}
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
 import org.apache.spark.mllib.regression._
 import org.apache.spark.mllib.util.MLUtils._
 import org.apache.spark.rdd.RDD
+import org.apache.spark.mllib.rdd.RDDFunctions._
 
+import scala.collection.mutable.ArrayBuffer
+import scala.util.control.Breaks._
+
+
+trait Transformer {
+  def transform(features: Vector): Vector
+}
+
+class RBFSampler(val numFeatures: Int, val numComponents: Int = 100, val gamma: Double = 1.0) extends Transformer with Serializable {
+  val randomWeights = new DenseMatrix(numFeatures, numComponents, Gaussian(0, 1).sample(numFeatures * numComponents).toArray)
+  val randomBias = BDV(Uniform(0, 2 * math.Pi).sample(numComponents).toArray)
+
+  def transform(features: Vector): Vector = {
+    val matrix = new DenseMatrix(1, features.size, features.toArray)
+    val projM = matrix * randomWeights
+    var projV = BDV[Double](projM.data)
+    projV :+= randomBias
+    cos.inPlace(projV)
+    projV *= math.sqrt(2.0 / numComponents)
+    Vectors.dense(projV.data)
+  }
+}
 
 /*
 supportVecors: Array[(label, point, alpha)]
  */
-class KernelSVMModel(val supportVectors: Array[(Double, Vector, Double)], val kernel: (Vector, Vector) => Double, biased: Boolean, regParam: Double, t: Int) extends ClassificationModel with Serializable {
+class KernelSVMModel(val supportVectors: Array[(Double, Vector, Double)], val kernel: (Vector, Vector) => Double, biased: Boolean, regParam: Double) extends ClassificationModel with Serializable {
 
   var intercept: Double = 0
   var threshold: Option[Double] = Some(0.0)
 
-  /**
-   * :: Experimental ::
-   * Sets the threshold that separates positive predictions from negative predictions. An example
-   * with prediction score greater than or equal to this threshold is identified as an positive,
-   * and negative otherwise. The default value is 0.0.
-   */
   @Experimental
   def setThreshold(threshold: Double): this.type = {
     this.threshold = Some(threshold)
     this
   }
 
-  /**
-   * :: Experimental ::
-   * Clears the threshold so that `predict` will output raw prediction scores.
-   */
   @Experimental
   def clearThreshold(): this.type = {
     threshold = None
@@ -48,9 +65,13 @@ class KernelSVMModel(val supportVectors: Array[(Double, Vector, Double)], val ke
       val features = v._2
       val alpha = v._3
 
-      val x = if(biased) { appendBias(dataMatrix) } else { dataMatrix }
+      val x = if (biased) {
+        appendBias(dataMatrix)
+      } else {
+        dataMatrix
+      }
       alpha * y * kernel(features, x)
-    }.sum / (regParam * t) + intercept
+    }.sum / regParam + intercept
 
     threshold match {
       case Some(t) => if (margin > t) 1.0 else 0.0
@@ -71,9 +92,12 @@ class KernelSVMModel(val supportVectors: Array[(Double, Vector, Double)], val ke
 
 
 class LinearSVMWithPegasos private(
+                                    private var bias: Boolean,
                                     private var numIterations: Int,
                                     private var regParam: Double,
-                                    private var miniBatchFraction: Double
+                                    private var miniBatchFraction: Double,
+                                    private var epsilon: Double = 0.02,
+                                    private var transforms: Transformer = null
                                     )
   extends Serializable {
   def createModel(weight: Vector, intercept: Double): SVMModel = {
@@ -81,53 +105,70 @@ class LinearSVMWithPegasos private(
   }
 
   def run(input: RDD[LabeledPoint]): SVMModel = {
+    val sc = input.context
     val data = input.map { point =>
       //scale label from {0, 1} to {-1, 1}
       val y = point.label * 2 - 1
       //append 1 to features for intercept
-      val x = appendBias(point.features)
+      val x = if (bias) appendBias(point.features) else point.features
       (y, x)
     }.cache()
 
-    val numFeatures = input.map(_.features.size).first()
-    val weights = BDV.zeros[Double](numFeatures + 1)
+    val size = input.first().features.size
+    val numFeatures = if(bias) size+1 else size
+    val weights = BDV.zeros[Double](numFeatures)
+
+    val lastLoss = Double.MaxValue
+    val lossHistory = new ArrayBuffer[Double](numIterations)
+    //val gradientHistory = new ArrayBuffer[Double](numIterations)
+
+    val scale = 1000 * 1000
 
     for (i <- 1 to numIterations) {
-      val samples = data.sample(false, miniBatchFraction)
-      val k = samples.count()
+      val bcWeights = sc.broadcast(weights)
       val stepSize = 1 / (regParam * i)
 
-      // w_i+1 = w_i - step*reg*w_i
-      axpy(-1 * stepSize * regParam, weights, weights)
+      //sum of hing loss part gradient
+      val (gradientSum, lossSum, batchSize) = data.sample(false, miniBatchFraction, 42 + i)
+        .treeAggregate((BDV.zeros[Double](weights.size), 0.0, 0L))(
+          seqOp = (c, v) => {
+            val y = v._1
+            val x = v._2
+            val b_x = BDV(x.toArray)
+            val dotProduct = bcWeights.value.dot(b_x)
+            if (y * dotProduct < 1) {
+              axpy(y, b_x, c._1)
+            }
+            (c._1, c._2 + math.max(0, 1 - y * dotProduct), c._3 + 1)
+          },
+          combOp = (c1, c2) => {
+            (c1._1 += c2._1, c1._2 + c2._2, c1._3 + c2._3)
+          })
 
-      //hing loss
-      val filteredSamples = samples.filter { v =>
-        val y = v._1
-        val x = v._2
-        if (y * (weights.dot(BDV(x.toArray))) < 1) {
-          true
-        } else {
-          false
-        }
-      }
+      //early stop
+      val loss = lossSum / batchSize + 0.5 * regParam * math.pow(norm(weights), 2)
+      lossHistory.append(loss)
 
-      val s = filteredSamples.aggregate(BDV.zeros[Double](weights.size))(
-        seqOp = (c, v) => {
-          val y = v._1
-          val x = v._2
-          c + BDV(x.toArray) * y
-        },
-        combOp = (c1, c2) => {
-          c1 + c2
-        })
 
-      //w_i+1 += step/k * sum(loss_gradient)
-      axpy(stepSize / k, s, weights)
+      val gradient = weights * regParam - gradientSum / batchSize.toDouble
+      //gradientHistory.append(norm(gradient))
+      axpy(-stepSize, gradient, weights)
+
+    }
+    //create svmmodel from result
+    val w = if(bias){
+      Vectors.dense(weights.toArray.slice(0, weights.size - 1))
+    }
+    else{
+      Vectors.dense(weights.toArray)
     }
 
-    //create svmmodel from result
-    val w = Vectors.dense(weights.toArray.slice(0, weights.size - 1))
-    val b = weights(weights.size - 1)
+    val b = if(bias){
+      weights(weights.size - 1)
+    }
+    else {
+      0
+    }
     createModel(w, b)
   }
 }
@@ -142,32 +183,40 @@ class KernelSVMWithPegasos private(
   protected def createModel(supporters: Array[(Double, Vector, Double)],
                             kernel: (Vector, Vector) => Double,
                             biased: Boolean,
-                            regParam: Double,
-                            numIterations: Int): KernelSVMModel = {
-    new KernelSVMModel(supporters, kernel, biased, regParam, numIterations)
+                            regParam: Double): KernelSVMModel = {
+    new KernelSVMModel(supporters, kernel, biased, regParam)
   }
 
   def run(input: RDD[LabeledPoint]): KernelSVMModel = {
+    val sc = input.context
     val data = input.map { point =>
       val y = point.label * 2 - 1
-      val x = if(biased){ appendBias(point.features) } else { point.features }
+      val x = if (biased) {
+        appendBias(point.features)
+      } else {
+        point.features
+      }
       (y, x)
     }.zipWithIndex().cache()
     val count = data.count()
-    val alpha = BDV.zeros[Double](count.toInt)
+    val alpha = BSV.zeros[Double](count.toInt)
 
     for (i <- 1 to numIterations) {
       val stepSize = 1 / (regParam * i)
       val sample = data.takeSample(false, 1, 42 + i)(0)
-      val res = data.aggregate(0.0)(
+
+      val bcSample = sc.broadcast(sample)
+      val bcAlpha = sc.broadcast(alpha)
+
+      val res = data.treeAggregate(0.0)(
         seqOp = (c, v) => {
           val y = v._1._1
           val features = v._1._2
           val index = v._2
 
-          if (index != sample._2) {
-            val a = alpha(index.toInt)
-            val res = y * a * kernel(features, sample._1._2)
+          if (index != bcSample.value._2) {
+            val a = bcAlpha.value(index.toInt)
+            val res = y * a * kernel(features, bcSample.value._1._2)
             c + res
           } else {
             c
@@ -196,18 +245,19 @@ class KernelSVMWithPegasos private(
       (v._1._1, v._1._2, alpha(v._2.toInt))
     }.collect()
 
-    createModel(supporters, kernel, biased, regParam, numIterations)
+    createModel(supporters, kernel, biased, regParam * numIterations)
   }
 }
 
 object LinearSVMWithPegasos {
   def train(
              input: RDD[LabeledPoint],
+             bias: Boolean,
              numIterations: Int,
              regParam: Double,
              miniBatchFraction: Double
              ): SVMModel = {
-    new LinearSVMWithPegasos(numIterations, regParam, miniBatchFraction).run(input)
+    new LinearSVMWithPegasos(bias, numIterations, regParam, miniBatchFraction).run(input)
   }
 }
 
@@ -229,7 +279,7 @@ object KernelSVMWithPegasos {
       case "gaussian" => (v1, v2) => {
         val bv1 = BDV(v1.toArray)
         val bv2 = BDV(v2.toArray)
-        val n = norm(bv1-bv2)
+        val n = norm(bv1 - bv2)
         val k = math.exp(math.pow(n, 2) * -0.5)
         k
       }

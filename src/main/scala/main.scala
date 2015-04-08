@@ -7,17 +7,27 @@ import org.apache.spark.mllib.classification._
 import org.apache.spark.mllib.evaluation.BinaryClassificationMetrics
 import org.apache.spark.mllib.regression.LabeledPoint
 import org.apache.spark.mllib.linalg.{Vectors, SparseVector, Vector}
+import org.apache.spark.storage.StorageLevel
 
 object app {
   def main(args: Array[String]) = {
-    var filename = ""
+    var filename = "scripts/samples/2d_linear/2d.csv"
+    var trainer = "linear"
+    var kernelName = "linear"
+    var miniBatch = 0.01
     if(args.length > 0){
       filename = args(0)
-    }else{
-      filename = "scripts/2d.csv"
     }
-
-    val conf = new SparkConf().setAppName("spark-svm").setMaster("local")
+    if(args.length > 1){
+      trainer = args(1)
+    }
+    if(args.length > 2){
+      trainer match {
+        case "kernel" => kernelName = args(2)
+        case _ => miniBatch = args(2).toDouble
+      }
+    }
+    val conf = new SparkConf().setAppName("spark-svm")
     val sc = new SparkContext(conf)
 
     val data = sc.textFile(filename).map{ line =>
@@ -28,30 +38,53 @@ object app {
     }
 
     val splits = data.randomSplit(Array(0.6, 0.4), seed = 11L)
-    val training = splits(0).cache()
-    val test = splits(1)
+    var training = splits(0).cache()
+    var test = splits(1)
 
     // Run training algorithm to build the model
-    val trainer = "kernel"
     var model: ClassificationModel = null
     trainer match {
       case "linear" => {
         val numIterations = 100
-        val regPram = 0.01
-
-        val m = LinearSVMWithPegasos.train(training, numIterations, regPram, 1)
+        val regParam = 0.01
+        val bias = true
+        val m = LinearSVMWithPegasos.train(training, bias, numIterations, regParam, miniBatch)
 
         // Clear the default threshold.
         m.clearThreshold()
         model = m
 
       }
+      case "approx" => {
+        val numIterations = 100
+        val regParam = 0.01
+        val stepSize = 1
+        val bias = false
+
+        val d = data.first().features.size
+        val nComponent = d*10
+        val sampler = new RBFSampler(d, 40)
+        val bcSampler = sc.broadcast(sampler)
+        training = training.map( point => {
+          val proj = bcSampler.value.transform(point.features)
+          LabeledPoint(point.label, proj)
+        })
+        test = test.map( point => {
+          val proj = bcSampler.value.transform(point.features)
+          LabeledPoint(point.label, proj)
+        })
+
+        val m = LinearSVMWithPegasos.train(training, bias, numIterations, regParam, miniBatch)
+        // Clear the default threshold.
+        m.clearThreshold()
+        model = m
+      }
       case "kernel" => {
-        val numIterations = 1000
+        val numIterations = 100
         val regPram = 0.01
         val biased = false
 
-        val kernelName = "gaussian"
+        //val kernelName = "gaussian"
         //val kernelName = "polynomial"
         val m = KernelSVMWithPegasos.train(training, numIterations, regPram, biased, kernelName)
         //val model = SVMWithSVM.train(training, numIterations)
@@ -59,13 +92,16 @@ object app {
         // Clear the default threshold.
         m.clearThreshold()
         model = m
-        saveVectors(m.supportVectors.map(v => (v._1,v._2)))
+        val master = conf.get("spark.master")
+        if(master == "local"){
+          saveVectors(m.supportVectors.map(v => (v._1,v._2)))
+        }
       }
       case _ => {
+        val stepSize = 1
         val numIterations = 100
-        val svm = new SVMWithSGD()
-        svm.setIntercept(true)
-        val m = svm.run(training)
+        val regParam = 0.01
+        val m = SVMWithSGD.train(training, numIterations, stepSize, regParam, miniBatch)
 
         // Clear the default threshold.
         m.clearThreshold()
@@ -77,15 +113,14 @@ object app {
     val master = conf.get("spark.master")
     if(master == "local"){
       val s = data.first()
-      val feautres = s.features
-      val len = feautres.size
+      val features = s.features
+      val len = features.size
       if(len == 2){
         hyper2d(model)
       }
       else if(len == 3){
         hyper3d(model)
       }
-
     }
 
     // Compute raw scores on the test set.
@@ -102,7 +137,7 @@ object app {
 
   def hyper3d(model: ClassificationModel) = {
     val n = 100
-    val step = 0.02
+    val step = 0.05
     val r = 0 to n
     val points = for(i <- r; j <- r) yield {
       var v = Double.MaxValue
