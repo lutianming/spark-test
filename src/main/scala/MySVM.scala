@@ -271,29 +271,7 @@ object KernelSVMWithPegasos {
              regParam: Double,
              biased: Boolean,
              kernelName: String): KernelSVMModel = {
-    val kernel: (Vector, Vector) => Double = kernelName match {
-      case "linear" => (v1, v2) => {
-        val k = BDV(v1.toArray).dot(BDV(v2.toArray))
-        k
-      }
-      case "gaussian" => (v1, v2) => {
-        val bv1 = BDV(v1.toArray)
-        val bv2 = BDV(v2.toArray)
-        val n = norm(bv1 - bv2)
-        val k = math.exp(math.pow(n, 2) * -0.5)
-        k
-      }
-      case "polynomial" => (v1, v2) => {
-        val bv1 = BDV(v1.toArray)
-        val bv2 = BDV(v2.toArray)
-        val k = bv1.dot(bv2)
-        math.pow(k + 1, 2)
-      }
-      case _ => (v1, v2) => {
-        val k = BDV(v1.toArray).dot(BDV(v2.toArray))
-        k
-      }
-    }
+    val kernel = Kernel.fromName(kernelName)
     new KernelSVMWithPegasos(numIterations, regParam, biased, kernel).run(input)
   }
 }
