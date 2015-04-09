@@ -22,6 +22,7 @@ import scala.util.control.Breaks._
 
 trait Transformer {
   def transform(features: Vector): Vector
+  def fit(featureRDD: RDD[LabeledPoint]) = {}
 }
 
 class RBFSampler(val numFeatures: Int, val numComponents: Int = 100, val gamma: Double = 1.0) extends Transformer with Serializable {
@@ -39,6 +40,30 @@ class RBFSampler(val numFeatures: Int, val numComponents: Int = 100, val gamma: 
   }
 }
 
+class NystromSampler(val numComponent: Int, val kernel: (Vector, Vector) => Double) extends Transformer with Serializable{
+  var samples: Array[Vector] = null
+  var normalization: DenseMatrix[Double] = null
+  override def fit(rdd: RDD[LabeledPoint]): Unit ={
+    samples = rdd.takeSample(false, numComponent).map(_.features)
+    val rows = samples.map( i => {
+      samples.map( j => kernel(i, j))
+    })
+
+    val matrix = DenseMatrix(rows: _*)
+    //val e = eig(matrix)
+    //val tmp = sqrt(diag(e.eigenvalues)).map(1 ./ _)
+    //normalization = tmp * e.eigenvectors
+    val svd.SVD(u,s,v) = svd(matrix)
+    val tmp = sqrt(s).map(1. / _ )
+    normalization = (u * diag(tmp)) * v
+  }
+
+  override def transform(features: Vector): Vector = {
+    val k = new DenseMatrix(1, samples.size, samples.map(kernel(_, features)))
+    val embedded = k * normalization
+    Vectors.dense(embedded.data)
+  }
+}
 /*
 supportVecors: Array[(label, point, alpha)]
  */

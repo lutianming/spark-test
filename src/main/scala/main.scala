@@ -79,6 +79,31 @@ object app {
         m.clearThreshold()
         model = m
       }
+      case "nystrom" => {
+        val numIterations = 100
+        val regParam = 0.01
+        val stepSize = 1
+        val bias = false
+
+        val sampler = new NystromSampler(30, Kernel.fromName("gaussian"))
+        sampler.fit(data)
+        val bcSampler = sc.broadcast(sampler)
+        training = training.map( point => {
+          val proj = bcSampler.value.transform(point.features)
+          LabeledPoint(point.label, proj)
+        }).cache()
+        test = test.map( point => {
+          val proj = bcSampler.value.transform(point.features)
+          LabeledPoint(point.label, proj)
+        })
+
+        val m = LinearSVMWithPegasos.train(training, bias, numIterations, regParam, miniBatch)
+        //val m = SVMWithSGD.train(training, numIterations, stepSize, regParam, miniBatch)
+
+        // Clear the default threshold.
+        m.clearThreshold()
+        model = m
+      }
       case "kernel" => {
         val numIterations = 100
         val regPram = 0.01
