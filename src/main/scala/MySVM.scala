@@ -136,12 +136,13 @@ class LinearSVMWithPegasos private(
       val y = point.label * 2 - 1
       //append 1 to features for intercept
       val x = if (bias) appendBias(point.features) else point.features
-      (y, x)
+      LabeledPoint(y, x)
     }.cache()
 
-    val size = input.first().features.size
-    val numFeatures = if(bias) size+1 else size
+    val numFeatures = data.first().features.size
+
     val weights = BDV.zeros[Double](numFeatures)
+    //var weights = Vectors.zeros(numFeatures)
 
     val lastLoss = Double.MaxValue
     val lossHistory = new ArrayBuffer[Double](numIterations)
@@ -151,14 +152,13 @@ class LinearSVMWithPegasos private(
 
     for (i <- 1 to numIterations) {
       val bcWeights = sc.broadcast(weights)
-      val stepSize = 1 / (regParam * i)
 
       //sum of hing loss part gradient
       val (gradientSum, lossSum, batchSize) = data.sample(false, miniBatchFraction, 42 + i)
         .treeAggregate((BDV.zeros[Double](weights.size), 0.0, 0L))(
           seqOp = (c, v) => {
-            val y = v._1
-            val x = v._2
+            val y = v.label
+            val x = v.features
             val b_x = BDV(x.toArray)
             val dotProduct = bcWeights.value.dot(b_x)
             if (y * dotProduct < 1) {
@@ -171,14 +171,14 @@ class LinearSVMWithPegasos private(
           })
 
       //early stop
-      val loss = lossSum / batchSize + 0.5 * regParam * math.pow(norm(weights), 2)
-      lossHistory.append(loss)
+      //val loss = lossSum / batchSize + 0.5 * regParam * math.pow(norm(weights), 2)
+      //lossHistory.append(loss)
 
-
+      //val bdvWeights = BDV(weights.toArray)
+      val stepSize = 1 / (regParam * i)
       val gradient = weights * regParam - gradientSum / batchSize.toDouble
       //gradientHistory.append(norm(gradient))
       axpy(-stepSize, gradient, weights)
-
     }
     //create svmmodel from result
     val w = if(bias){
