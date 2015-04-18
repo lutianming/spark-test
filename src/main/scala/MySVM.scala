@@ -6,7 +6,7 @@ import java.io.Serializable
 
 import breeze.linalg.{DenseVector => BDV, SparseVector => BSV, Vector => BV}
 import breeze.linalg._
-import breeze.numerics.cos
+import breeze.numerics.{sqrt, cos}
 import breeze.stats.distributions.{Uniform, Gaussian}
 import org.apache.spark.annotation.Experimental
 import org.apache.spark.mllib.classification.{SVMModel, ClassificationModel}
@@ -67,7 +67,7 @@ class NystromSampler(val numComponent: Int, val kernel: (Vector, Vector) => Doub
 /*
 supportVecors: Array[(label, point, alpha)]
  */
-class KernelSVMModel(val supportVectors: Array[(Double, Vector, Double)], val kernel: (Vector, Vector) => Double, biased: Boolean, regParam: Double) extends ClassificationModel with Serializable {
+class KernelSVMModel(val supportVectors: Array[(LabeledPoint, Double)], val kernel: (Vector, Vector) => Double, biased: Boolean, regParam: Double) extends ClassificationModel with Serializable {
 
   var intercept: Double = 0
   var threshold: Option[Double] = Some(0.0)
@@ -86,9 +86,9 @@ class KernelSVMModel(val supportVectors: Array[(Double, Vector, Double)], val ke
 
   protected def predictPoint(dataMatrix: Vector): Double = {
     val margin = supportVectors.map { v =>
-      val y = v._1
-      val features = v._2
-      val alpha = v._3
+      val y = v._1.label
+      val features = v._1.features
+      val alpha = v._2
 
       val x = if (biased) {
         appendBias(dataMatrix)
@@ -128,6 +128,7 @@ class LinearSVMWithPegasos private(
   def createModel(weight: Vector, intercept: Double): SVMModel = {
     new SVMModel(weight, intercept)
   }
+
 
   def run(input: RDD[LabeledPoint]): SVMModel = {
     val sc = input.context
@@ -205,7 +206,7 @@ class KernelSVMWithPegasos private(
                                     private var kernel: (Vector, Vector) => Double)
   extends Serializable {
 
-  protected def createModel(supporters: Array[(Double, Vector, Double)],
+  protected def createModel(supporters: Array[(LabeledPoint, Double)],
                             kernel: (Vector, Vector) => Double,
                             biased: Boolean,
                             regParam: Double): KernelSVMModel = {
@@ -221,7 +222,7 @@ class KernelSVMWithPegasos private(
       } else {
         point.features
       }
-      (y, x)
+      LabeledPoint(y, x)
     }.zipWithIndex().cache()
     val count = data.count()
     val alpha = BSV.zeros[Double](count.toInt)
@@ -235,13 +236,13 @@ class KernelSVMWithPegasos private(
 
       val res = data.treeAggregate(0.0)(
         seqOp = (c, v) => {
-          val y = v._1._1
-          val features = v._1._2
+          val y = v._1.label
+          val features = v._1.features
           val index = v._2
 
           if (index != bcSample.value._2) {
             val a = bcAlpha.value(index.toInt)
-            val res = y * a * kernel(features, bcSample.value._1._2)
+            val res = y * a * kernel(features, bcSample.value._1.features)
             c + res
           } else {
             c
@@ -250,7 +251,7 @@ class KernelSVMWithPegasos private(
         combOp = (c1, c2) => {
           c1 + c2
         }
-      ) * sample._1._1 * stepSize
+      ) * sample._1.label * stepSize
 
       if (res < 1) {
         val a = alpha(sample._2.toInt)
@@ -266,8 +267,8 @@ class KernelSVMWithPegasos private(
         false
       }
     }.map { v =>
-      //(lable, features, alpha)
-      (v._1._1, v._1._2, alpha(v._2.toInt))
+      //(lablePoint, alpha)
+      (v._1, alpha(v._2.toInt))
     }.collect()
 
     createModel(supporters, kernel, biased, regParam * numIterations)

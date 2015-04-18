@@ -11,7 +11,7 @@ import org.apache.spark.storage.StorageLevel
 
 object app {
   def main(args: Array[String]) = {
-    var filename = "scripts/samples/2d_linear/2d.csv"
+    var filename = "scripts/2dcircle.csv"
     var trainer = "linear"
     var kernelName = "linear"
     var miniBatch = 0.01
@@ -38,7 +38,7 @@ object app {
     }
 
     val splits = data.randomSplit(Array(0.6, 0.4), seed = 11L)
-    var training = splits(0).cache()
+    var training = splits(0)
     var test = splits(1)
 
     // Run training algorithm to build the model
@@ -58,7 +58,6 @@ object app {
       case "approx" => {
         val numIterations = 100
         val regParam = 0.01
-        val stepSize = 1
         val bias = false
 
         val d = data.first().features.size
@@ -119,7 +118,7 @@ object app {
         model = m
         val master = conf.get("spark.master")
         if(master == "local"){
-          saveVectors(m.supportVectors.map(v => (v._1,v._2)))
+          saveVectors(m.supportVectors.map(v => v._1))
         }
       }
       case _ => {
@@ -141,10 +140,10 @@ object app {
       val features = s.features
       val len = features.size
       if(len == 2){
-        hyper2d(model)
+        //hyper2d(model)
       }
       else if(len == 3){
-        hyper3d(model)
+        //hyper3d(model)
       }
     }
 
@@ -213,11 +212,11 @@ object app {
     }
     pw.close()
   }
-  def saveVectors(vectors: Array[(Double, Vector)]): Unit ={
+  def saveVectors(vectors: Array[LabeledPoint]): Unit ={
     val pw = new PrintWriter(new File("vectors.csv"))
     vectors.foreach{ v =>
-      val y = v._1
-      val x = v._2
+      val y = v.label
+      val x = v.features
       pw.println((y +: x.toArray).mkString(" "))
     }
     pw.close()
