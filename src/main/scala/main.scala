@@ -1,4 +1,4 @@
-import java.io.{PrintWriter, File}
+import java.io.{FileWriter, BufferedWriter, PrintWriter, File}
 
 import org.apache.spark.SparkContext
 import org.apache.spark.SparkContext._
@@ -15,6 +15,10 @@ object app {
     var trainer = "linear"
     var kernelName = "linear"
     var miniBatch = 0.01
+    var stepSize = 1.0
+    var regParam = 0.01
+    var output = "result.txt"
+    var numIterations = 200
     if(args.length > 0){
       filename = args(0)
     }
@@ -27,7 +31,13 @@ object app {
         case _ => miniBatch = args(2).toDouble
       }
     }
+    stepSize = args(3).toDouble
+    numIterations = args(4).toInt
+    output = args(5)
+
     val conf = new SparkConf().setAppName("spark-svm")
+    //conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+    //conf.registerKryoClasses(Array(classOf[LabeledPoint]))
     val sc = new SparkContext(conf)
 
     val data = sc.textFile(filename).map{ line =>
@@ -37,27 +47,42 @@ object app {
       LabeledPoint(label.toDouble, Vectors.dense(features.map(f => f.toDouble)))
     }
 
-    val splits = data.randomSplit(Array(0.6, 0.4), seed = 11L)
-    var training = splits(0)
-    var test = splits(1)
+    //val splits = data.randomSplit(Array(0.6, 0.4), seed = 11L)
+    //var training = splits(0)
+    //var training = splits(0).persist(StorageLevel.MEMORY_AND_DISK)
+    //var test = splits(1)
+    var training = data
 
     // Run training algorithm to build the model
     var model: ClassificationModel = null
     trainer match {
       case "linear" => {
-        val numIterations = 100
-        val regParam = 0.01
         val bias = true
-        val m = LinearSVMWithPegasos.train(training, bias, numIterations, regParam, miniBatch)
+        training = training.cache()
+        val n = training.count()
+        val start = System.currentTimeMillis() / 1000
+        val (m, loss, iters) = LinearSVMWithPegasos.train(training, bias, numIterations, regParam, miniBatch)
 
+        val end = System.currentTimeMillis() / 1000
+
+        val name = filename.split('/').last.split('.')(0)
+        val file = new File(output)
+        val bw = new BufferedWriter(new FileWriter(file))
+        bw.write((end-start).toString + "\n")
+        bw.write("###\n")
+        for (i <- 0 until numIterations){
+          val l = loss(i)
+          val iter = iters(i)
+          bw.write(iter.toString + " " + l.toString + "\n")
+        }
+        bw.close()
+        //training.unpersist()
         // Clear the default threshold.
         m.clearThreshold()
         model = m
 
       }
       case "approx" => {
-        val numIterations = 100
-        val regParam = 0.01
         val bias = false
 
         val d = data.first().features.size
@@ -68,20 +93,17 @@ object app {
           val proj = bcSampler.value.transform(point.features)
           LabeledPoint(point.label, proj)
         })
-        test = test.map( point => {
-          val proj = bcSampler.value.transform(point.features)
-          LabeledPoint(point.label, proj)
-        })
+//        test = test.map( point => {
+//          val proj = bcSampler.value.transform(point.features)
+//          LabeledPoint(point.label, proj)
+//        })
 
-        val m = LinearSVMWithPegasos.train(training, bias, numIterations, regParam, miniBatch)
+        val (m, loss, iters) = LinearSVMWithPegasos.train(training, bias, numIterations, regParam, miniBatch)
         // Clear the default threshold.
         m.clearThreshold()
         model = m
       }
       case "nystrom" => {
-        val numIterations = 100
-        val regParam = 0.01
-        val stepSize = 1
         val bias = false
 
         val sampler = new NystromSampler(30, Kernel.fromName("gaussian"))
@@ -91,12 +113,12 @@ object app {
           val proj = bcSampler.value.transform(point.features)
           LabeledPoint(point.label, proj)
         }).cache()
-        test = test.map( point => {
-          val proj = bcSampler.value.transform(point.features)
-          LabeledPoint(point.label, proj)
-        })
+//        test = test.map( point => {
+//          val proj = bcSampler.value.transform(point.features)
+//          LabeledPoint(point.label, proj)
+//        })
 
-        val m = LinearSVMWithPegasos.train(training, bias, numIterations, regParam, miniBatch)
+        val (m, loss, iters) = LinearSVMWithPegasos.train(training, bias, numIterations, regParam, miniBatch)
         //val m = SVMWithSGD.train(training, numIterations, stepSize, regParam, miniBatch)
 
         // Clear the default threshold.
@@ -104,13 +126,11 @@ object app {
         model = m
       }
       case "kernel" => {
-        val numIterations = 100
-        val regPram = 0.01
         val biased = false
 
         //val kernelName = "gaussian"
         //val kernelName = "polynomial"
-        val m = KernelSVMWithPegasos.train(training, numIterations, regPram, biased, kernelName)
+        val m = KernelSVMWithPegasos.train(training, numIterations, regParam, biased, kernelName)
         //val model = SVMWithSVM.train(training, numIterations)
 
         // Clear the default threshold.
@@ -121,11 +141,48 @@ object app {
           saveVectors(m.supportVectors.map(v => v._1))
         }
       }
+      case "pegasos" => {
+        training = training.cache()
+        val n = training.count()
+
+        val start = System.currentTimeMillis() / 1000
+        val (m, loss, iters) = SVMWithPegasos.train(training, numIterations, stepSize, regParam, miniBatch)
+        val end = System.currentTimeMillis() / 1000
+
+        val file = new File(output)
+        val bw = new BufferedWriter(new FileWriter(file))
+        bw.write((end-start).toString + "\n")
+        bw.write("###\n")
+        for (i <- 0 until numIterations){
+          val l = loss(i)
+          val iter = iters(i)
+          bw.write(iter.toString + " " + l.toString + "\n")
+        }
+        bw.close()
+
+        // Clear the default threshold.
+        m.clearThreshold()
+        println(m.weights, m.intercept)
+        model = m
+      }
       case _ => {
-        val stepSize = 1
-        val numIterations = 100
-        val regParam = 0.01
-        val m = SVMWithSGD.train(training, numIterations, stepSize, regParam, miniBatch)
+        training = training.cache()
+        val n = training.count()
+
+        val start = System.currentTimeMillis() / 1000
+        val (m, loss, iters) = MySVMWithSGD.train(training, numIterations, stepSize, regParam, miniBatch)
+        val end = System.currentTimeMillis() / 1000
+
+        val file = new File(output)
+        val bw = new BufferedWriter(new FileWriter(file))
+        bw.write((end-start).toString + "\n")
+        bw.write("###\n")
+        for (i <- 0 until numIterations){
+          val l = loss(i)
+          val iter = iters(i)
+          bw.write(iter.toString + " " + l.toString + "\n")
+        }
+        bw.close()
 
         // Clear the default threshold.
         m.clearThreshold()
@@ -134,29 +191,30 @@ object app {
       }
     }
 
-    val master = conf.get("spark.master")
-    if(master == "local"){
-      val s = data.first()
-      val features = s.features
-      val len = features.size
-      if(len == 2){
-        //hyper2d(model)
-      }
-      else if(len == 3){
-        //hyper3d(model)
-      }
-    }
+//    val master = conf.get("spark.master")
+//    if(master == "local"){
+//      val s = data.first()
+//      val features = s.features
+//      val len = features.size
+//      if(len == 2){
+//        //hyper2d(model)
+//      }
+//      else if(len == 3){
+//        //hyper3d(model)
+//      }
+//    }
 
+    //test = test.cache()
     // Compute raw scores on the test set.
-    val scoreAndLabels = test.map { point =>
-      val score = model.predict(point.features)
-      (score, point.label)
-    }
-
-    // Get evaluation metrics.
-    val metrics = new BinaryClassificationMetrics(scoreAndLabels)
-    val auROC = metrics.areaUnderROC()
-    println("Area under ROC = " + auROC)
+//    val scoreAndLabels = test.map { point =>
+//      val score = model.predict(point.features)
+//      (score, point.label)
+//    }
+//
+//    // Get evaluation metrics.
+//    val metrics = new BinaryClassificationMetrics(scoreAndLabels)
+//    val auROC = metrics.areaUnderROC()
+//    println("Area under ROC = " + auROC)
   }
 
   def hyper3d(model: ClassificationModel) = {
@@ -221,4 +279,5 @@ object app {
     }
     pw.close()
   }
+
 }

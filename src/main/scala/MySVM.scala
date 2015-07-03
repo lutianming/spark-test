@@ -9,7 +9,7 @@ import breeze.linalg._
 import breeze.numerics.{sqrt, cos}
 import breeze.stats.distributions.{Uniform, Gaussian}
 import org.apache.spark.annotation.Experimental
-import org.apache.spark.mllib.classification.{SVMModel, ClassificationModel}
+import org.apache.spark.mllib.classification.{SVMModelMy, ClassificationModel}
 import org.apache.spark.mllib.linalg.{Vector, Vectors}
 import org.apache.spark.mllib.regression._
 import org.apache.spark.mllib.util.MLUtils._
@@ -125,12 +125,12 @@ class LinearSVMWithPegasos private(
                                     private var transforms: Transformer = null
                                     )
   extends Serializable {
-  def createModel(weight: Vector, intercept: Double): SVMModel = {
-    new SVMModel(weight, intercept)
+  def createModel(weight: Vector, intercept: Double): SVMModelMy = {
+    new SVMModelMy(weight, intercept)
   }
 
 
-  def run(input: RDD[LabeledPoint]): SVMModel = {
+  def run(input: RDD[LabeledPoint]): (SVMModelMy, Array[Double], Array[Long]) = {
     val sc = input.context
     val data = input.map { point =>
       //scale label from {0, 1} to {-1, 1}
@@ -147,10 +147,14 @@ class LinearSVMWithPegasos private(
 
     val lastLoss = Double.MaxValue
     val lossHistory = new ArrayBuffer[Double](numIterations)
+    val iterTimes = new ArrayBuffer[Long](numIterations)
     //val gradientHistory = new ArrayBuffer[Double](numIterations)
 
     val scale = 1000 * 1000
 
+    println(miniBatchFraction)
+
+    val start = System.currentTimeMillis()
     for (i <- 1 to numIterations) {
       val bcWeights = sc.broadcast(weights)
 
@@ -171,15 +175,17 @@ class LinearSVMWithPegasos private(
             (c1._1 += c2._1, c1._2 + c2._2, c1._3 + c2._3)
           })
 
-      //early stop
-      //val loss = lossSum / batchSize + 0.5 * regParam * math.pow(norm(weights), 2)
-      //lossHistory.append(loss)
-
       //val bdvWeights = BDV(weights.toArray)
       val stepSize = 1 / (regParam * i)
       val gradient = weights * regParam - gradientSum / batchSize.toDouble
       //gradientHistory.append(norm(gradient))
       axpy(-stepSize, gradient, weights)
+
+      //early stop
+      val loss = lossSum / batchSize + 0.5 * regParam * math.pow(norm(weights), 2)
+      lossHistory.append(loss)
+      val end = System.currentTimeMillis()
+      iterTimes.append(end-start)
     }
     //create svmmodel from result
     val w = if(bias){
@@ -195,7 +201,7 @@ class LinearSVMWithPegasos private(
     else {
       0
     }
-    createModel(w, b)
+    (createModel(w, b), lossHistory.toArray, iterTimes.toArray)
   }
 }
 
@@ -282,7 +288,7 @@ object LinearSVMWithPegasos {
              numIterations: Int,
              regParam: Double,
              miniBatchFraction: Double
-             ): SVMModel = {
+             ): (SVMModelMy, Array[Double], Array[Long]) = {
     new LinearSVMWithPegasos(bias, numIterations, regParam, miniBatchFraction).run(input)
   }
 }

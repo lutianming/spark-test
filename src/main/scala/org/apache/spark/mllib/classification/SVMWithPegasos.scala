@@ -3,7 +3,7 @@ package org.apache.spark.mllib.classification
 import breeze.linalg.{Vector => BV, axpy => brzAxpy, norm => brzNorm}
 import org.apache.spark.mllib.linalg.Vector
 import org.apache.spark.mllib.optimization._
-import org.apache.spark.mllib.regression.{GeneralizedLinearAlgorithm, LabeledPoint}
+import org.apache.spark.mllib.regression.{MyGeneralizedLinearAlgorithm, GeneralizedLinearAlgorithm, LabeledPoint}
 import org.apache.spark.mllib.util.DataValidators
 import org.apache.spark.rdd.RDD
 
@@ -15,11 +15,11 @@ class SVMWithPegasos private (
                                private var numIterations: Int,
                                private var regParam: Double,
                                private var miniBatchFraction: Double)
-  extends GeneralizedLinearAlgorithm[SVMModel] with Serializable{
+  extends MyGeneralizedLinearAlgorithm[SVMModelMy] with Serializable{
   private val gradient = new HingeGradient()
   private val updater = new PegasosUpdater()
 
-  override def optimizer: Optimizer = new GradientDescent(gradient, updater)
+  override def optimizer: MyOptimizer = new MyGradientDescent(gradient, updater)
   .setStepSize(stepSize)
   .setNumIterations(numIterations)
   .setRegParam(regParam)
@@ -32,8 +32,8 @@ class SVMWithPegasos private (
    */
   def this() = this(1.0, 100, 0.01, 1.0)
 
-  override protected def createModel(weights: Vector, intercept: Double): SVMModel = {
-    new SVMModel(weights, intercept)
+  override protected def createModel(weights: Vector, intercept: Double): SVMModelMy = {
+    new SVMModelMy(weights, intercept)
   }
 }
 
@@ -44,7 +44,7 @@ object SVMWithPegasos {
              stepSize: Double,
              regParam: Double,
              miniBatchFraction: Double,
-             initialWeights: Vector): SVMModel = {
+             initialWeights: Vector): (SVMModelMy, Array[Double], Array[Long]) = {
     new SVMWithPegasos(stepSize, numIterations, regParam, miniBatchFraction)
       .run(input, initialWeights)
   }
@@ -66,7 +66,7 @@ object SVMWithPegasos {
              numIterations: Int,
              stepSize: Double,
              regParam: Double,
-             miniBatchFraction: Double): SVMModel = {
+             miniBatchFraction: Double): (SVMModelMy, Array[Double], Array[Long]) = {
     new SVMWithPegasos(stepSize, numIterations, regParam, miniBatchFraction).run(input)
   }
 
@@ -86,7 +86,7 @@ object SVMWithPegasos {
              input: RDD[LabeledPoint],
              numIterations: Int,
              stepSize: Double,
-             regParam: Double): SVMModel = {
+             regParam: Double): (SVMModelMy, Array[Double], Array[Long]) = {
     train(input, numIterations, stepSize, regParam, 1.0)
   }
 
@@ -100,7 +100,7 @@ object SVMWithPegasos {
    * @param numIterations Number of iterations of gradient descent to run.
    * @return a SVMModel which has the weights and offset from training.
    */
-  def train(input: RDD[LabeledPoint], numIterations: Int): SVMModel = {
+  def train(input: RDD[LabeledPoint], numIterations: Int): (SVMModelMy, Array[Double], Array[Long]) = {
     train(input, numIterations, 1.0, 0.01, 1.0)
   }
 }
