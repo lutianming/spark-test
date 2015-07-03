@@ -1,0 +1,235 @@
+#+title: Performance Of Machine Learning with Spark
+
+#+startup: beamer
+#+LaTeX_CLASS: beamer
+#+LaTeX_CLASS_OPTIONS: [bigger]
+#+OPTIONS:   H:2 toc:t ^:nil
+
+#+BEAMER_FRAME_LEVEL: 2
+
+#+LATEX_HEADER: \usepackage{amsmath}
+#+LATEX_HEADER: \usepackage{algorithm}
+#+LATEX_HEADER: \usepackage{algorithmic}
+#+LATEX_HEADER: \usepackage{bbm}
+#+latex_header: \mode<beamer>{\usetheme{Madrid}}
+
+* Introduction
+** Introduction
++ Spark: a fast and general engine for large-scale data processing
++ TeraLab: Big Data analysis platform based on Hadoop, Spark and other Big Data technologies.
++ object: analyze the performance of ML tasks with Spark under the TeraLab platform
+
+** Spark
++ Cluster computing framework
++ Compared to Hadoop, handle computing in memory(100x faster in memory, or 10x faster on disk)
++ Useful for iterative jobs
+
+** How it works
++ RDD(Resilient Distributed Datasets)
++ Every RDD has multiple partitions which are distributed among clusters
++ Transformations: transform one RDD from anthor one, such as /map/ and /filter/
++ Actions: get results from RDD, such as /collect/ and /reduce/.
++ Lazy evaluation: transformations are done only the task meets an action
+
+[[./imgs/rdd.png]]
+
+** Spark Cluster Mode
++ Driver: high-level control
++ Executor: run computations
+[[./imgs/spark.png]]
+
+** Spark Cluster Mode
+1. An action(collect, reduce...) triggers a *job*
+2. Examine the graph of RDDs on which the action depends
+3. Put the job's transformations into *stage*
+4. Each stage includes a colllection of *tasks* that run the same code on each subset of data
+[[./imgs/spark.png]]
+
+** SVM(Support Vector Machine)
++ Given a training set \( S = \{ (x_i, y_i) \}_{i=1}^{m} \), where \( x_i \in \mathbb{R}^n \) and \( y_i \in \{ +1, -1 \} \)
++ Find the maximum-margin hyperplane
+
+*** A block                                                                                            :BMCOL:
+    :PROPERTIES:
+    :BEAMER_col: 0.4
+    :END:
+
+
+    [[./imgs/svm.png]]
+
+
+*** A block                                                                                            :BMCOL:
+    :PROPERTIES:
+    :BEAMER_col: 0.4
+    :END:
+
+    + hyperplane: \( w \cdot x - b = 0 \)
+    + \( y_i(w \cdot x_i - b) \geq 1 \) for all \(1 \leq i \leq n \)
+    + optimization problem: minimize \( \frac{1}{2} \| w \|^2 \) subject to \( y_i(w \cdot x_i - b) \geq 1 \) for all \( 1 \leq i \leq n \)
+
+
+** SVM
+Can be viewed as an unconstrained empirical loss minimization with a penalty term for the norm
+
+Given a training set \( S = \{ (x_i, y_i) \}_{i=1}^{m} \), where \( x_i \in \mathbb{R}^n \) and \( y_i \in \{ +1, -1 \} \), find the minimization of the problem
+
+\[
+ \min_{w} \frac{\lambda}{2}\|w\|^2 + \frac{1}{m}\sum_{(x, y) \in S} \ell(w; (x, y))
+\]
+
+Where \lambda is the regularization parameter, \( \ell(w, (x, y)) \) is the hinge loss:
+
+\[
+\ell(w, (x, y)) = max\{0, 1-y \langle w, x \rangle \}
+\]
+
+** SVM
+Use gradient descent to achieve the minimum value
+
+The objective function is
+
+\[
+f(w) = \frac{\lambda}{2}\|w\|^2 + \frac{1}{m}\sum_{(x_i, y_i) \in S}\ell(w; (x_i, y_i))
+\]
+
+Then, the sub-gradient for iteration /t/ is
+\[
+\nabla_t = \lambda w_t - \frac{1}{m}\sum_{(x_i, y_i) \in S}\mathbbm{1}[y_i \langle w, x_i \rangle < 1]y_i x_i
+\]
+
+update w, where \( \eta_t \) is the step size
+\[
+w_{t+1} \leftarrow w_t - \eta_t\nabla_t
+\]
+
+** SGD
++ Stochastic Gradient Descent(SGD) uses data samples instead of the whole dataset
+
++ Object function:
+\[
+f(w, A_t) = \frac{\lambda}{2}\|w\|^2 + \frac{1}{k}\sum_{(x_i, y_i) \in A_t}\ell(w; (x_i, y_i))
+\]
+where \( A_t \subset S \), \( |A_t| = k \)
+
++ sub-gradient:
+ \[ \nabla_t = \lambda w_t - \frac{1}{k}\sum_{(x_i, y_i) \in A_t}\mathbbm{1}[y_i \langle w, x_i \rangle < 1]y_i x_i \]
+
+** Compare Pegasos with MLlib SVM implementation
++ Pegasos, is a kind of stochastic gradient descent algorithm
+
+\[
+w_{t+1} = w_t - \eta_t\nabla_t
+\]
+
+In Pegasos, the update step is
+\[
+\eta_t = \frac{\alpha}{t\lambda}
+\]
+In MLlib, this is
+\[
+\eta_t = \frac{\alpha}{\sqrt{t}}
+\]
+
+where \alpha is the step size parameter
+
+* SGD and Spark
+** SGD in Spark
++ *Aggregate* is a generalized combination of *Map* and *Reduce*
++ in Spark, *treeAggregate* is the most import method used for SGD
+
+
+*** code 						      :BMCOL:B_block:
+    :PROPERTIES:
+    :BEAMER_col: 0.9
+    :BEAMER_env: block
+    :END:
+
+#+BEGIN_SRC scala
+RDD.treeAggregate(zeroValue: U)(
+      seqOp: (U, T) => U,
+      combOp: (U, U) => U,
+      depth: Int = 2): Up
+
+#+END_SRC
+
++ seqOp(as map): calculate gradient for every partition
++ combOp(as reduce): combine gradients of partitions together
+
+** SGD in Spark
+#+caption: graph for treeAggregate
+#+name: tree
+[[./imgs/tree.png]]
+
+** Implementation
+#+caption: SGD implementation
+[[./imgs/code.png]]
+
+
+* Experiments and Performance
+** Experiments
++ experiments with small dataset
++ experiments with TeraLab
+** 2D
+2 dimension linear dataset, generated with normal distribution
+#+caption: 2D linear
+#+name: 2d
+[[./imgs/2d_linear.png]]
+
+** 3D
+3 dimension linear dataset, generated with normal distribution
+#+caption: 3D linear
+#+name: 3d
+[[./imgs/3d_linear.png]]
+
+** The convergence speed
+Compare the convergence speed of Pegasos and MLlib
+
+
++ 5GB, 1000 features, 4 executors, 100 iterations
++ The plot ignores the first 30 iterations
+#+ATTR_LATEX: :width 8cm
+#+caption: before aligning Y axis
+#+name: coverage1
+[[./imgs/step1.png]]
+
+** The convergence speed
++ When the step size is well chosen, Pegasos and MLlib have similar performance
++ Pegasos is easier to find the right step parameter. In most cases, 1 is good
+
+#+ATTR_LATEX: :width 8cm
+#+caption: after aligning Y axis
+#+name: coverage2
+[[./imgs/step2.png]]
+
+** Performance under TeraLab
+Test the relationship between running time and parameters
+
++ batch size: 5GB, 1000 features, 4 executors
++ executors: 2GB, 1000 features
++ size: 1000 features, 4 executors
+
+#+caption: performance
+#+name: performance
+[[./imgs/perf.eps]]
+
+** Performance under TeraLab
++ Running time proportional to \( \frac{batchSize*size}{executors} \)
++ The number of executors is not always the more, the better
++ The running time increases when the data can't be fitted in memory
+
+* Conclusion
+** Conclusion
++ Spark is better than Hadoop MapReduce for ML tasks
++ It has the best performance when data can be fitted in memory
++ Running time is proportional to data size, For SGD, also mini batch size
++ Using more executors can decrease running time, but not always
++ Memory tuning can be a crucial part for Spark to achieve good performance
+
+** Further work
++ Test performance with dynamic resource allocation(CDH 5.4/Spark 1.3)
++ Estimate proper memory size to fit in memory
+
+** Reference
+1. Resilient Distributed Datasets: A Fault-Tolerant Abstraction for In-Memory Cluster Computing
+2. Spark: Cluster Computing with Working Sets
+3. Pegasos: Primal Estimated sub-Gradient Solver for SVM
